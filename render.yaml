@@ -1,0 +1,21 @@
+# Render blueprint for the shared test environment.
+# New > Blueprint > point at this repo. After the first deploy, open the service Shell and run:
+#   npm run db:prod -- seed
+services:
+  - type: web
+    name: errandly
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: { name: errandly-db, property: connectionString }
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MIGRATE_ON_START
+        value: "true"
+      - key: ALLOW_SEED
+        value: "true"
+databases:
+  - name: errandly-db
+    plan: free

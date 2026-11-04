@@ -1,0 +1,548 @@
+openapi: 3.0.3
+info:
+  title: Errandly API
+  version: 1.0.0
+  description: |
+    Personal shopping and delivery. Customers submit a shopping list with a budget; a shopper accepts,
+    proposes prices and swaps, buys, and delivers. Payments are simulated.
+
+    **Authentication.** `POST /auth/login` or `/auth/register` returns a JWT. Send it as
+    `Authorization: Bearer <token>` on every other request.
+
+    **Money.** All amounts are integers in minor units (pesewas): `1500` = GHS 15.00.
+
+    **Idempotency.** `POST /orders` and `POST /orders/{id}/payments` require an `Idempotency-Key`
+    header (8–100 chars, e.g. a UUID). Repeating a request with the same key returns the original
+    result with status `200` instead of creating a duplicate.
+
+    **Errors.** Every error has the shape `{ "error": { "code", "message", "details"? } }`.
+
+    | Status | Codes |
+    |---|---|
+    | 400 | `VALIDATION_ERROR` (details lists fields), `MALFORMED_JSON`, `IDEMPOTENCY_KEY_REQUIRED` |
+    | 401 | `UNAUTHENTICATED`, `INVALID_CREDENTIALS` |
+    | 403 | `FORBIDDEN` (wrong role, not your order, not the assigned shopper) |
+    | 404 | `NOT_FOUND` |
+    | 409 | `INVALID_STATE_TRANSITION` (details: currentStatus, attemptedStatus), `ALREADY_ASSIGNED`, `STALE_PROPOSAL`, `NO_VALID_APPROVAL`, `ALREADY_PAID`, `ISSUE_NOT_ALLOWED`, `ISSUE_ALREADY_RESOLVED`, `EMAIL_TAKEN` |
+    | 422 | `CART_EMPTY`, `EXCEEDS_APPROVED_AMOUNT`, `INCOMPLETE_PROPOSAL`, `UNKNOWN_ORDER_ITEM`, `DUPLICATE_ORDER_ITEM`, `SUBSTITUTE_NAME_REQUIRED`, `NOTHING_TO_BUY`, `UNKNOWN_PROPOSAL_LINE`, `DUPLICATE_LINE`, `LINE_UNAVAILABLE`, `QUANTITY_EXCEEDS_PROPOSAL` |
+servers:
+  - url: /api
+security:
+  - bearer: []
+tags:
+  - name: Auth
+  - name: Cart
+  - name: Orders
+  - name: Shopper
+  - name: Proposals
+  - name: Purchase and payment
+  - name: Delivery
+  - name: Cancellation and issues
+  - name: Admin
+
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Create a customer or shopper account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name, role]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                name: { type: string }
+                role: { type: string, enum: [customer, shopper] }
+            example: { email: kofi@example.com, password: Secret123, name: Kofi, role: customer }
+      responses:
+        '201': { $ref: '#/components/responses/AuthResult' }
+        '400': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Sign in
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+            example: { email: customer@errandly.test, password: Demo1234! }
+      responses:
+        '200': { $ref: '#/components/responses/AuthResult' }
+        '401': { $ref: '#/components/responses/Error' }
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user
+      responses:
+        '200':
+          description: The signed-in user
+          content:
+            application/json:
+              schema: { type: object, properties: { user: { $ref: '#/components/schemas/User' } } }
+        '401': { $ref: '#/components/responses/Error' }
+  /config:
+    get:
+      tags: [Auth]
+      summary: Public settings (currency, service fee)
+      security: []
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              example: { currency: GHS, serviceFeeMinor: 1500 }
+
+  /cart:
+    get:
+      tags: [Cart]
+      summary: Customer's cart
+      responses:
+        '200':
+          description: Cart items
+          content:
+            application/json:
+              schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/CartItem' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /cart/items:
+    post:
+      tags: [Cart]
+      summary: Add an item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CartItemInput' }
+            example: { name: Rice (5kg bag), quantity: 1, notes: Jasmine if possible }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/CartItem' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+  /cart/items/{itemId}:
+    parameters: [{ name: itemId, in: path, required: true, schema: { type: integer } }]
+    patch:
+      tags: [Cart]
+      summary: Change an item
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { name: { type: string }, quantity: { type: integer, minimum: 1 }, notes: { type: string } } }, example: { quantity: 3 } } }
+      responses:
+        '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/CartItem' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [Cart]
+      summary: Remove an item
+      responses:
+        '204': { description: Removed }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /orders:
+    post:
+      tags: [Orders]
+      summary: Submit the cart as an order (customer)
+      description: Copies the cart into order items, stores the service fee, and empties the cart.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [budgetMinor, deliveryAddress]
+              properties:
+                budgetMinor: { type: integer, minimum: 1, description: 'Maximum spend on goods, excluding fee' }
+                deliveryAddress: { type: string, minLength: 5 }
+                notes: { type: string }
+            example: { budgetMinor: 15000, deliveryAddress: '14 Liberation Rd, Accra', notes: Gate code 4471 }
+      responses:
+        '201': { $ref: '#/components/responses/Order' }
+        '200': { description: Replay of an earlier submission with the same key, content: { application/json: { schema: { $ref: '#/components/schemas/OrderDetail' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+    get:
+      tags: [Orders]
+      summary: List orders (customer – own; shopper – assigned; admin – all)
+      parameters: [{ name: status, in: query, schema: { $ref: '#/components/schemas/OrderStatus' } }]
+      responses:
+        '200': { description: Orders, content: { application/json: { schema: { type: object, properties: { orders: { type: array, items: { $ref: '#/components/schemas/Order' } } } } } } }
+  /orders/available:
+    get:
+      tags: [Shopper]
+      summary: Unassigned requests a shopper can accept
+      responses:
+        '200': { description: Open requests with their items }
+        '403': { $ref: '#/components/responses/Error' }
+  /orders/{id}:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }]
+    get:
+      tags: [Orders]
+      summary: Full order with items, current proposal, purchase, payments, issues and history
+      description: Visible to the owner, the assigned shopper, admins, and (in limited form) shoppers browsing an unassigned request.
+      responses:
+        '200': { $ref: '#/components/responses/Order' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /orders/{id}/accept:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }]
+    post:
+      tags: [Shopper]
+      summary: Accept an open request (atomic; exactly one shopper wins)
+      responses:
+        '200': { $ref: '#/components/responses/Order' }
+        '409':
+          description: Someone else won, or the order isn't open
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { error: { code: ALREADY_ASSIGNED, message: Another shopper has already accepted this order, details: { currentStatus: ASSIGNED } } } } }
+
+  /orders/{id}/proposals:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }]
+    post:
+      tags: [Proposals]
+      summary: Submit or revise a proposal (assigned shopper)
+      description: |
+        One line per requested item. Swaps or a goods total above budget put the order in
+        `AWAITING_APPROVAL`; otherwise it is approved automatically. A new proposal supersedes the
+        previous one and voids its approval.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lines]
+              properties:
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    required: [orderItemId, kind, quantity, unitPriceMinor]
+                    properties:
+                      orderItemId: { type: integer }
+                      kind: { type: string, enum: [AS_REQUESTED, SUBSTITUTE, UNAVAILABLE] }
+                      name: { type: string, description: Required for SUBSTITUTE }
+                      quantity: { type: integer, minimum: 0 }
+                      unitPriceMinor: { type: integer, minimum: 0 }
+                      note: { type: string }
+            example:
+              lines:
+                - { orderItemId: 1, kind: SUBSTITUTE, name: Perfumed rice (5kg), quantity: 1, unitPriceMinor: 11500, note: No jasmine in stock }
+                - { orderItemId: 2, kind: AS_REQUESTED, quantity: 1, unitPriceMinor: 6500 }
+                - { orderItemId: 3, kind: UNAVAILABLE, quantity: 0, unitPriceMinor: 0 }
+      responses:
+        '201': { $ref: '#/components/responses/Order' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /orders/{id}/proposals/{proposalId}/approve:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }, { name: proposalId, in: path, required: true, schema: { type: integer } }]
+    post:
+      tags: [Proposals]
+      summary: Approve the exact proposal version you reviewed (customer)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [version], properties: { version: { type: integer } } }, example: { version: 1 } } }
+      responses:
+        '200': { $ref: '#/components/responses/Order' }
+        '409':
+          description: Not awaiting approval, or the proposal changed
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { error: { code: STALE_PROPOSAL, message: The proposal has changed since you viewed it; review the latest version, details: { currentProposalId: 4, currentVersion: 2 } } } } }
+  /orders/{id}/proposals/{proposalId}/reject:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }, { name: proposalId, in: path, required: true, schema: { type: integer } }]
+    post:
+      tags: [Proposals]
+      summary: Reject a proposal, optionally saying what to change (customer)
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { reason: { type: string } } }, example: { reason: 'No swap for the rice, skip it' } } }
+      responses:
+        '200': { $ref: '#/components/responses/Order' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /orders/{id}/purchase:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }]
+    post:
+      tags: [Purchase and payment]
+      summary: Record what was bought (assigned shopper)
+      description: |
+        Send quantities and unit prices only. The server calculates goods total and final total
+        (goods + stored fee) and rejects the purchase if the final total exceeds the approved amount.
+        Unknown fields (such as a total) are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [storeName, receiptNumber, lines]
+              properties:
+                storeName: { type: string }
+                receiptNumber: { type: string }
+                receiptNote: { type: string }
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    required: [proposalLineId, quantity, unitPriceMinor]
+                    properties:
+                      proposalLineId: { type: integer }
+                      quantity: { type: integer, minimum: 1 }
+                      unitPriceMinor: { type: integer, minimum: 0 }
+            example: { storeName: Makola Market, receiptNumber: MK-20931, lines: [{ proposalLineId: 7, quantity: 1, unitPriceMinor: 11000 }] }
+      responses:
+        '201': { $ref: '#/components/responses/Order' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422':
+          description: Business rule violated
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, example: { error: { code: EXCEEDS_APPROVED_AMOUNT, message: The final total exceeds the amount the customer approved, details: { finalTotalMinor: 11500, approvedAmountMinor: 9500 } } } } }
+  /orders/{id}/payments:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }]
+    post:
+      tags: [Purchase and payment]
+      summary: Simulate paying the final total (customer)
+      description: |
+        Only after purchase. The amount always comes from the order. `outcome` chooses the simulated
+        result. A failed payment can be retried with a new key. At most one successful payment can
+        ever exist per order.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [outcome], properties: { outcome: { type: string, enum: [success, failure] } } }, example: { outcome: success } } }
+      responses:
+        '201':
+          description: Attempt recorded
+          content: { application/json: { schema: { type: object, properties: { payment: { $ref: '#/components/schemas/Payment' }, replayed: { type: boolean } } } } }
+        '200': { description: Replay of an earlier attempt with the same key; nothing new charged }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /orders/{id}/out-for-delivery:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }]
+    post:
+      tags: [Delivery]
+      summary: Dispatch (assigned shopper; requires successful payment)
+      responses:
+        '200': { $ref: '#/components/responses/Order' }
+        '409': { $ref: '#/components/responses/Error' }
+  /orders/{id}/delivered:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }]
+    post:
+      tags: [Delivery]
+      summary: Mark delivered (assigned shopper)
+      responses:
+        '200': { $ref: '#/components/responses/Order' }
+        '409': { $ref: '#/components/responses/Error' }
+  /orders/{id}/confirm-receipt:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }]
+    post:
+      tags: [Delivery]
+      summary: Confirm receipt and complete (customer)
+      responses:
+        '200': { $ref: '#/components/responses/Order' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /orders/{id}/cancel:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }]
+    post:
+      tags: [Cancellation and issues]
+      summary: Cancel before anything is bought (customer; no charge)
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { reason: { type: string } } } } }
+      responses:
+        '200': { $ref: '#/components/responses/Order' }
+        '409': { $ref: '#/components/responses/Error' }
+  /orders/{id}/issues:
+    parameters: [{ $ref: '#/components/parameters/OrderId' }]
+    post:
+      tags: [Cancellation and issues]
+      summary: Report an issue after purchase (customer)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [description], properties: { description: { type: string, minLength: 5 } } }, example: { description: Two eggs were cracked } } }
+      responses:
+        '201': { description: Issue created, content: { application/json: { schema: { $ref: '#/components/schemas/Issue' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /admin/issues:
+    get:
+      tags: [Admin]
+      summary: List issues
+      parameters: [{ name: status, in: query, schema: { type: string, enum: [OPEN, RESOLVED] } }]
+      responses:
+        '200': { description: Issues, content: { application/json: { schema: { type: object, properties: { issues: { type: array, items: { $ref: '#/components/schemas/Issue' } } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /admin/issues/{issueId}/resolve:
+    parameters: [{ name: issueId, in: path, required: true, schema: { type: integer } }]
+    post:
+      tags: [Admin]
+      summary: Resolve an issue with notes
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [resolutionNotes], properties: { resolutionNotes: { type: string, minLength: 5 } } } } }
+      responses:
+        '200': { description: Resolved, content: { application/json: { schema: { $ref: '#/components/schemas/Issue' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    OrderId: { name: id, in: path, required: true, schema: { type: integer } }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 100 }
+      example: 3f2b8c1e-6a2d-4c55-9e0b-2a7f1b9c4d11
+  responses:
+    Error:
+      description: Error
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    AuthResult:
+      description: Token and user
+      content:
+        application/json:
+          schema: { type: object, properties: { token: { type: string }, user: { $ref: '#/components/schemas/User' } } }
+    Order:
+      description: The order after the action
+      content: { application/json: { schema: { $ref: '#/components/schemas/OrderDetail' } } }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: {}
+      example: { error: { code: INVALID_STATE_TRANSITION, message: Dispatch is blocked until payment succeeds, details: { currentStatus: PURCHASED, attemptedStatus: OUT_FOR_DELIVERY } } }
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string }
+        name: { type: string }
+        role: { type: string, enum: [customer, shopper, admin] }
+    CartItemInput:
+      type: object
+      required: [name, quantity]
+      properties:
+        name: { type: string, maxLength: 200 }
+        quantity: { type: integer, minimum: 1, maximum: 999 }
+        notes: { type: string, maxLength: 500 }
+    CartItem:
+      allOf:
+        - $ref: '#/components/schemas/CartItemInput'
+        - type: object
+          properties: { id: { type: integer }, customer_id: { type: integer } }
+    OrderStatus:
+      type: string
+      enum: [SUBMITTED, ASSIGNED, AWAITING_APPROVAL, PROPOSAL_REJECTED, APPROVED, PURCHASED, PAID, OUT_FOR_DELIVERY, DELIVERED, COMPLETED, CANCELLED]
+    Order:
+      type: object
+      properties:
+        id: { type: integer }
+        customer_id: { type: integer }
+        shopper_id: { type: integer, nullable: true }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        budget_minor: { type: integer }
+        fee_minor: { type: integer }
+        currency: { type: string }
+        delivery_address: { type: string }
+        notes: { type: string, nullable: true }
+        goods_total_minor: { type: integer, nullable: true }
+        final_total_minor: { type: integer, nullable: true }
+        has_open_issue: { type: boolean }
+        created_at: { type: string, format: date-time }
+    ProposalLine:
+      type: object
+      properties:
+        id: { type: integer }
+        order_item_id: { type: integer }
+        kind: { type: string, enum: [AS_REQUESTED, SUBSTITUTE, UNAVAILABLE] }
+        name: { type: string }
+        quantity: { type: integer }
+        unit_price_minor: { type: integer }
+        note: { type: string, nullable: true }
+    Proposal:
+      type: object
+      properties:
+        id: { type: integer }
+        version: { type: integer }
+        status: { type: string, enum: [PENDING, APPROVED, REJECTED, SUPERSEDED] }
+        goods_total_minor: { type: integer }
+        fee_minor: { type: integer }
+        total_minor: { type: integer }
+        requires_customer_approval: { type: boolean }
+        lines: { type: array, items: { $ref: '#/components/schemas/ProposalLine' } }
+        approval:
+          nullable: true
+          type: object
+          properties:
+            approved_amount_minor: { type: integer }
+            method: { type: string, enum: [CUSTOMER, AUTO] }
+            approved_by: { type: integer, nullable: true }
+    Payment:
+      type: object
+      properties:
+        id: { type: integer }
+        amount_minor: { type: integer }
+        currency: { type: string }
+        status: { type: string, enum: [SUCCEEDED, FAILED] }
+        failure_reason: { type: string, nullable: true }
+        simulated_reference: { type: string }
+        created_at: { type: string, format: date-time }
+    Issue:
+      type: object
+      properties:
+        id: { type: integer }
+        order_id: { type: integer }
+        description: { type: string }
+        status: { type: string, enum: [OPEN, RESOLVED] }
+        resolution_notes: { type: string, nullable: true }
+        resolved_by: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }
+        resolved_at: { type: string, format: date-time, nullable: true }
+    Event:
+      type: object
+      properties:
+        type: { type: string, example: PROPOSAL_APPROVED }
+        from_status: { type: string, nullable: true }
+        to_status: { type: string, nullable: true }
+        actor_id: { type: integer, nullable: true, description: null when the system acted }
+        actor_role: { type: string, enum: [customer, shopper, admin, system] }
+        actor_name: { type: string, nullable: true }
+        note: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+    OrderDetail:
+      allOf:
+        - $ref: '#/components/schemas/Order'
+        - type: object
+          properties:
+            customer: { type: object, properties: { id: { type: integer }, name: { type: string } } }
+            shopper: { type: object, nullable: true, properties: { id: { type: integer }, name: { type: string } } }
+            items: { type: array, items: { type: object, properties: { id: { type: integer }, name: { type: string }, quantity: { type: integer }, notes: { type: string, nullable: true } } } }
+            currentProposal: { type: object, allOf: [{ $ref: '#/components/schemas/Proposal' }], nullable: true }
+            proposalHistory: { type: array, items: { type: object, properties: { id: { type: integer }, version: { type: integer }, status: { type: string }, total_minor: { type: integer } } } }
+            purchase:
+              nullable: true
+              type: object
+              properties:
+                store_name: { type: string }
+                receipt_number: { type: string }
+                goods_total_minor: { type: integer }
+                fee_minor: { type: integer }
+                final_total_minor: { type: integer }
+                lines: { type: array, items: { type: object, properties: { name: { type: string }, quantity: { type: integer }, unit_price_minor: { type: integer }, line_total_minor: { type: integer } } } }
+            payments: { type: array, items: { $ref: '#/components/schemas/Payment' } }
+            issues: { type: array, items: { $ref: '#/components/schemas/Issue' } }
+            events: { type: array, items: { $ref: '#/components/schemas/Event' } }
