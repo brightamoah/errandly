@@ -1,0 +1,37 @@
+
+ ⛅️ wrangler 4.157.0
+────────────────────
+Found a non-empty CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE variable for binding. Hyperdrive will connect to this database during local development.
+Using secrets defined in .dev.vars
+Your Worker has access to the following bindings:
+Binding                                                       Resource                  Mode
+env.HYPERDRIVE (492018dd539545a28bd4387983c815c1)             Hyperdrive Config         local
+env.ASSETS                                                    Assets                    local
+env.NODE_ENV ("production")                                   Environment Variable      local
+env.CURRENCY ("GHS")                                          Environment Variable      local
+env.SERVICE_FEE_MINOR ("2000")                                Environment Variable      local
+env.JWT_SECRET ("(hidden)")                                   Environment Variable      local
+
+Wrangler detected this dev session is running in an AI agent.
+The Local Explorer API is available at http://127.0.0.1:8797/cdn-cgi/local/explorer/api
+Useful routes:
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/local/workers - local Workers and bindings
+  POST http://127.0.0.1:8797/cdn-cgi/local/explorer/api/local/scheduled?worker=<name> - invoke a Worker's scheduled handler; cron is required (see the OpenAPI schema for the full request)
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/storage/kv/namespaces - KV namespaces
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/d1/database - D1 databases
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/r2/buckets - R2 buckets
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/workers/durable_objects/namespaces - Durable Object namespaces
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/workflows - Workflows
+  POST http://127.0.0.1:8797/cdn-cgi/local/explorer/api/local/observability/query - run a read-only SQL query (SELECT/WITH only) over captured request traces and console logs. Tables: spans, logs (read attributes via json(attributes)). Example:
+    curl -X POST http://127.0.0.1:8797/cdn-cgi/local/explorer/api/local/observability/query -H 'Content-Type: application/json' -d '{"sql":"SELECT service, name, outcome, duration_ms FROM spans WHERE parent_id IS NULL LIMIT 20"}'
+  POST http://127.0.0.1:8797/cdn-cgi/local/explorer/api/local/observability/clear - clear all captured traces and logs
+If the routes above don't cover what you need, fetch the full OpenAPI schema (large - use only as a last resort):
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api - OpenAPI schema
+⎔ Starting local server...
+[wrangler:info] Ready on http://127.0.0.1:8797
+stdout: POST /api/auth/login 401 2319.000 ms
+[wrangler:info] POST /api/auth/login 401 unknown (2509ms)
+⎔ Reloading local server...
+⎔ Local server updated and ready
+⎔ Reloading local server...
+⎔ Local server updated and ready

@@ -1,0 +1,67 @@
+{
+    "$schema": "node_modules/wrangler/config-schema.json",
+    "name": "errandly",
+    "main": "src/worker.ts",
+    "compatibility_date": "2026-10-01",
+    // Express, pg and knex need the Node.js built-ins (http, net, crypto, ...).
+    "compatibility_flags": [
+        "nodejs_compat"
+    ],
+    "upload_source_maps": true,
+    "observability": {
+        "enabled": true
+    },
+    // Postgres over Hyperdrive. Create it once with:
+    //   npx wrangler hyperdrive create errandly-db --connection-string="postgres://..."
+    // and paste the returned id below.
+    "hyperdrive": [
+        {
+            "binding": "HYPERDRIVE",
+            "id": "492018dd539545a28bd4387983c815c1"
+        }
+    ],
+    // The built React interface. Everything that is not an API route is served
+    // straight from the edge; only these paths run the Express Worker.
+    "assets": {
+        "directory": "./web/dist",
+        "binding": "ASSETS",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": [
+            "/api/*",
+            "/health",
+            "/openapi.json",
+            "/docs"
+        ]
+    },
+    // Non-secret settings. JWT_SECRET is a secret: `npx wrangler secret put JWT_SECRET`.
+    "vars": {
+        "NODE_ENV": "production",
+        "CURRENCY": "GHS",
+        "SERVICE_FEE_MINOR": "2000"
+    },
+    // Knex lazily requires every database dialect it supports. Errandly only uses
+    // Postgres, so the other drivers are aliased to a stub: the Worker bundle
+    // never needs mysql/sqlite/oracle, and those packages are not installed.
+    "alias": {
+        // Knex's browser field disables pg; point it back at the real driver file.
+        "pg": "./node_modules/pg/lib/index.js",
+        "better-sqlite3": "./src/cf/unavailable.ts",
+        "mariadb/callback": "./src/cf/unavailable.ts",
+        "mysql": "./src/cf/unavailable.ts",
+        "mysql2": "./src/cf/unavailable.ts",
+        "oracledb": "./src/cf/unavailable.ts",
+        "pg-query-stream": "./src/cf/unavailable.ts",
+        "sqlite3": "./src/cf/unavailable.ts",
+        "tedious": "./src/cf/unavailable.ts"
+    },
+    // The OpenAPI document is inlined into the bundle at build time.
+    "rules": [
+        {
+            "type": "Text",
+            "globs": [
+                "**/*.yaml"
+            ],
+            "fallthrough": true
+        }
+    ]
+}

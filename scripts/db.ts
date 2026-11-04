@@ -1,6 +1,7 @@
 /**
  * Database CLI: `pnpm run db [migrate | rollback | seed | reset | help]`
  */
+import 'dotenv/config';
 import { db } from '../src/db';
 
 function printHelp() {

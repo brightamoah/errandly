@@ -1,0 +1,19 @@
+/**
+ * Type checking for the Cloudflare Workers entry point (run with `pnpm run cf:typecheck`).
+ * The Node build uses the root tsconfig.json, which excludes these files.
+ */
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types", "node"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "include": ["src/worker.ts", "src/cf/**/*.ts", "src/types.d.ts"]
+}

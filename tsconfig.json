@@ -9,5 +9,7 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["src", "migrations", "seeds", "scripts"]
+  "include": ["src", "migrations", "seeds", "scripts"],
+  // The Workers entry and its Cloudflare-only app are checked by tsconfig.worker.json.
+  "exclude": ["src/worker.ts", "src/cf", "src/types.d.ts"]
 }

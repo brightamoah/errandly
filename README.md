@@ -12,6 +12,7 @@ A personal shopping and delivery service. A customer writes a shopping list and 
 | [`docs/requirements.md`](docs/requirements.md) | MR-01–08 as user stories and acceptance criteria, each mapped to a test; assumptions |
 | [`docs/architecture.md`](docs/architecture.md) | Status model, data model, integrity and concurrency decisions, tradeoffs, limitations |
 | [`docs/project-plan.md`](docs/project-plan.md) | Weekly plan and evidence map, demo script, defect log, decision notes |
+| [`docs/cloudflare-workers.md`](docs/cloudflare-workers.md) | Deploying the API and interface as one Cloudflare Worker |
 | [`docs/screenshots/`](docs/screenshots) | Interface screenshots for each role |
 
 ## Run it locally
@@ -106,6 +107,19 @@ The app is one Docker image that serves the API, the docs and the interface.
 
 **Any other host:** build with `docker build -t errandly .`, provide `DATABASE_URL`, `JWT_SECRET` and `MIGRATE_ON_START=true`, and expose port 3000. Health check: `GET /health`.
 
+**Cloudflare Workers:** the same image contents run at the edge — Express via the Workers `node:http` runtime, the React build as Workers Assets, and PostgreSQL through Hyperdrive. See [`docs/cloudflare-workers.md`](docs/cloudflare-workers.md). In short:
+
+```bash
+npx wrangler login
+# Neon: use the direct (non-pooler) connection string, and disable Hyperdrive's read cache
+npx wrangler hyperdrive create errandly-db --connection-string="postgres://..." --caching-disabled
+# paste the returned id into wrangler.jsonc
+pnpm run db migrate          # with DATABASE_URL pointing at the hosted database
+pnpm run db seed             # optional demo accounts
+npx wrangler secret put JWT_SECRET
+pnpm run cf:deploy
+```
+
 ## API at a glance
 
 Full reference with request and response examples: `/docs` on a running server, or [`docs/openapi.yaml`](docs/openapi.yaml) (import it into Postman via *Import → File*).
@@ -134,11 +148,18 @@ src/
   services/orders.ts      all business rules, one transaction per action
   routes/index.ts         HTTP endpoints, validation, role checks
   auth.ts, errors.ts      JWT auth and the error format
+  db.ts                   Knex access (shared instance on Node, per-request on Workers)
+  config.ts               environment configuration
+  app.ts                  Express app for Node (static files, Swagger UI)
+  server.ts               Node entry point
+  worker.ts               Cloudflare Workers entry point
+  cf/app.ts               Express app for Workers
 migrations/               schema (knex)
 seeds/                    demo accounts
 tests/                    Jest + Supertest
 web/                      React interface
 docs/                     requirements, architecture, plan, OpenAPI, screenshots
+wrangler.jsonc            Cloudflare Workers configuration
 ```
 
 ## Known limitations

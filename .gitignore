@@ -1,6 +1,8 @@
 node_modules
 dist
 .env
+.dev.vars
+.wrangler
 web/node_modules
 web/dist
 coverage
